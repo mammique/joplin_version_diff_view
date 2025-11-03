@@ -79,17 +79,18 @@ def parse_diff_file(filename):
 
     return title_json, body_json, content
 
-def get_updated_time(filename):
+def get_item_updated_time(filename):
+    """Extract item_updated_time (UNIX ms) → formatted date + raw ms"""
     with open(filename, 'r', encoding='utf-8') as f:
         for line in f:
-            if line.startswith('updated_time:'):
-                time_str = line.split(':', 1)[1].strip()
+            if line.startswith('item_updated_time:'):
                 try:
-                    dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
-                    return dt.strftime("%Y-%m-%d %H:%M:%S")
+                    ms = int(line.split(':', 1)[1].strip())
+                    dt = datetime.fromtimestamp(ms / 1000)
+                    return dt.strftime("%Y-%m-%d %H:%M:%S"), ms
                 except:
-                    return "Unknown"
-    return "Unknown"
+                    return "Unknown", 0
+    return "Unknown", 0
 
 def find_related_files(item_id, directory='.'):
     files = []
@@ -148,7 +149,6 @@ def color_line_ansi(line):
     return line
 
 def extract_changed_lines_with_context(prev_text, new_text):
-    """Return changed lines with 1 line before/after, [...] on its own line"""
     prev_lines = prev_text.splitlines()
     new_lines = new_text.splitlines()
     result = []
@@ -159,25 +159,21 @@ def extract_changed_lines_with_context(prev_text, new_text):
         new = new_lines[i] if i < len(new_lines) else ""
 
         if old != new:
-            # Add 1 line before (if exists and not already added)
             if i > 0:
                 prev_context = prev_lines[i-1] if i-1 < len(prev_lines) else ""
                 if prev_context and (not result or result[-1] != f"  {prev_context}"):
                     result.append(f"  {prev_context}")
 
-            # Add changed line
             if old:
                 result.append(f"[{i+1}] - {old}")
             if new:
                 result.append(f"[{i+1}] + {new}")
 
-            # Add 1 line after (if exists)
             if i < max_len - 1:
                 next_line = new_lines[i+1] if i+1 < len(new_lines) else prev_lines[i+1] if i+1 < len(prev_lines) else ""
                 if next_line:
                     result.append(f"  {next_line}")
 
-            # Add [...] isolated
             if i < max_len - 1:
                 result.append("")
                 result.append("[…]")
@@ -215,7 +211,9 @@ def main(stdscr):
         stdscr.getch()
         return
 
-    related_files.sort(key=lambda f: os.path.getmtime(f))
+    # TRI CHRONOLOGIQUE PAR item_updated_time (ms)
+    related_files.sort(key=lambda f: get_item_updated_time(f)[1])
+
     current_title, current_body = parse_note_file(current_file)
 
     # Pre-calculate versions
@@ -229,7 +227,7 @@ def main(stdscr):
         new_title = apply_patch(prev_title, title_patches)
         new_body = apply_patch(prev_body, body_patches)
 
-        diff_date = get_updated_time(diff_file)
+        diff_date, _ = get_item_updated_time(diff_file)
 
         # 1. Recalculated diff
         title_diff_lines = []
@@ -243,11 +241,11 @@ def main(stdscr):
                 if line and not line.startswith(('---', '+++')):
                     body_diff_lines.append(color_line_ansi(line))
 
-        # 2. RAW JSON — from parsed patches (DRY!)
+        # 2. RAW JSON
         raw_title_json = json.dumps(title_patches, indent=2, ensure_ascii=False)
         raw_body_json = json.dumps(body_patches, indent=2, ensure_ascii=False)
 
-        # 3. Reconstructed: 1 line before/after + [...] isolated
+        # 3. Reconstructed
         changed_lines = extract_changed_lines_with_context(prev_body, new_body)
         changed_body = '\n'.join(changed_lines) if changed_lines else "No change"
 
