@@ -2,4 +2,4 @@ Fore some reasons sometimes Joplin overwrites new changes with previous version 
 
 This script helps to view all recorded version history, with diffs and colors.
 
-Type `./joplin_version_diff_view.py NOTE_ID` in the Joplin directory. 
+Type `./joplin_version_diff_view.py NOTE_ID` in the Joplin directory (I'm using Webdav/NextCloud directory).
