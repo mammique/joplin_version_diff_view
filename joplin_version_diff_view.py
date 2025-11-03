@@ -89,10 +89,11 @@ def get_updated_time(filename):
             if line.startswith('updated_time:'):
                 time_str = line.split(':', 1)[1].strip()
                 try:
-                    return datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                    dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                    return dt.strftime("%Y-%m-%d %H:%M:%S")
                 except:
-                    return datetime.min
-    return datetime.min
+                    return "Unknown"
+    return "Unknown"
 
 def find_related_files(item_id, directory='.'):
     files = []
@@ -142,7 +143,6 @@ def parse_note_file(filename):
     return title, body
 
 def color_line_ansi(line):
-    """Apply ANSI colors (for pre-calculation)"""
     if line.startswith('+') and not line.startswith('+++'):
         return f"\033[32m{line}\033[0m"
     if line.startswith('-') and not line.startswith('---'):
@@ -181,19 +181,21 @@ def main(stdscr):
         stdscr.getch()
         return
 
-    related_files.sort(key=get_updated_time)
+    related_files.sort(key=lambda f: os.path.getmtime(f))  # Sort by file mtime if updated_time fails
     current_title, current_body = parse_note_file(current_file)
 
-    # Pre-calculate all versions
+    # Pre-calculate all versions with dates
     versions = []
     prev_title = ""
     prev_body = ""
-    versions.append(("Version 0 (empty)", "", ""))
+    versions.append(("Version 0 (empty)", "—", "", ""))
 
     for i, diff_file in enumerate(related_files, 1):
         title_patches, body_patches = parse_diff_file(diff_file)
         new_title = apply_patch(prev_title, title_patches)
         new_body = apply_patch(prev_body, body_patches)
+
+        diff_date = get_updated_time(diff_file)
 
         title_diff_lines = []
         body_diff_lines = []
@@ -208,14 +210,19 @@ def main(stdscr):
 
         versions.append((
             f"Version {i}: {os.path.basename(diff_file)}",
+            diff_date,
             '\n'.join(title_diff_lines),
             '\n'.join(body_diff_lines)
         ))
         prev_title, prev_body = new_title, new_body
 
     success = prev_title == current_title and prev_body == current_body
-
+    total_versions = len(versions) - 1
     i = 0
+
+    # Input buffer for number jump
+    number_buffer = ""
+
     while True:
         stdscr.clear()
         h, w = stdscr.getmaxyx()
@@ -240,25 +247,12 @@ def main(stdscr):
 
         print_centered("=" * 70)
         print_centered(versions[i][0])
+        print_centered(f"Date: {versions[i][1]}")  # DATE AFFICHÉE
         print_centered("=" * 70)
         y += 1
 
-        if versions[i][1]:
-            print_left("TITLE changed:")
-            for line in versions[i][1].splitlines():
-                clean = strip_ansi(line)
-                if line.startswith('\033[32m+'):
-                    print_left(clean, curses.color_pair(1))
-                elif line.startswith('\033[31m-'):
-                    print_left(clean, curses.color_pair(2))
-                elif line.startswith('\033[36m@@'):
-                    print_left(clean, curses.color_pair(3))
-                else:
-                    print_left(clean)
-            y += 1
-
         if versions[i][2]:
-            print_left("BODY changed:")
+            print_left("TITLE changed:")
             for line in versions[i][2].splitlines():
                 clean = strip_ansi(line)
                 if line.startswith('\033[32m+'):
@@ -269,8 +263,22 @@ def main(stdscr):
                     print_left(clean, curses.color_pair(3))
                 else:
                     print_left(clean)
+            y += 1
 
-        if i == len(versions) - 1:
+        if versions[i][3]:
+            print_left("BODY changed:")
+            for line in versions[i][3].splitlines():
+                clean = strip_ansi(line)
+                if line.startswith('\033[32m+'):
+                    print_left(clean, curses.color_pair(1))
+                elif line.startswith('\033[31m-'):
+                    print_left(clean, curses.color_pair(2))
+                elif line.startswith('\033[36m@@'):
+                    print_left(clean, curses.color_pair(3))
+                else:
+                    print_left(clean)
+
+        if i == total_versions:
             y += 1
             print_centered("=" * 70)
             status = "SUCCESS: Final version matches current note" if success else "FAILURE: Divergence detected"
@@ -278,18 +286,47 @@ def main(stdscr):
             print_centered("=" * 70)
 
         y += 1
-        nav = f"Version {i}/{len(versions)-1} — Page Down ↓ | Page Up ↑ | q to quit"
+        nav = f"Version {i}/{total_versions} — PgDn ↓ | PgUp ↑ | Home | End | [1-{total_versions}] + Enter | q to quit"
+        if number_buffer:
+            nav += f" → Jump to: {number_buffer}_"
         print_centered(nav)
 
         stdscr.refresh()
 
         key = stdscr.getch()
+
+        # Handle number input
+        if key >= ord('0') and key <= ord('9'):
+            number_buffer += chr(key)
+            continue
+        elif key == 10:  # Enter
+            if number_buffer:
+                try:
+                    target = int(number_buffer)
+                    if 0 <= target <= total_versions:
+                        i = target
+                except:
+                    pass
+                number_buffer = ""
+            continue
+        elif key == 127 or key == curses.KEY_BACKSPACE:
+            number_buffer = number_buffer[:-1]
+            continue
+
+        # Reset number buffer on navigation
+        number_buffer = ""
+
+        # Navigation
         if key in (curses.KEY_NPAGE, curses.KEY_DOWN, ord(' '), ord('j')):
-            if i < len(versions) - 1:
+            if i < total_versions:
                 i += 1
         elif key in (curses.KEY_PPAGE, curses.KEY_UP, ord('k')):
             if i > 0:
                 i -= 1
+        elif key == curses.KEY_HOME:
+            i = 0
+        elif key == curses.KEY_END:
+            i = total_versions
         elif key in (ord('q'), ord('Q'), 27):
             break
 
