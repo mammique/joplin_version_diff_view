@@ -181,14 +181,14 @@ def main(stdscr):
         stdscr.getch()
         return
 
-    related_files.sort(key=lambda f: os.path.getmtime(f))  # Sort by file mtime if updated_time fails
+    related_files.sort(key=lambda f: os.path.getmtime(f))
     current_title, current_body = parse_note_file(current_file)
 
-    # Pre-calculate all versions with dates
+    # Pre-calculate versions
     versions = []
     prev_title = ""
     prev_body = ""
-    versions.append(("Version 0 (empty)", "—", "", ""))
+    versions.append(("Version 0 (empty)", "—", [], []))
 
     for i, diff_file in enumerate(related_files, 1):
         title_patches, body_patches = parse_diff_file(diff_file)
@@ -211,92 +211,79 @@ def main(stdscr):
         versions.append((
             f"Version {i}: {os.path.basename(diff_file)}",
             diff_date,
-            '\n'.join(title_diff_lines),
-            '\n'.join(body_diff_lines)
+            title_diff_lines,
+            body_diff_lines
         ))
         prev_title, prev_body = new_title, new_body
 
     success = prev_title == current_title and prev_body == current_body
     total_versions = len(versions) - 1
-    i = 0
-
-    # Input buffer for number jump
+    current_version = 0
+    scroll_offset = 0
     number_buffer = ""
 
     while True:
         stdscr.clear()
         h, w = stdscr.getmaxyx()
 
-        y = 0
-        def print_centered(text):
-            nonlocal y
-            if y >= h - 1: return
-            x = max(0, (w - len(text)) // 2)
-            stdscr.addstr(y, x, text)
-            y += 1
+        # Build display lines
+        all_lines = []
+        version_name, version_date, title_lines, body_lines = versions[current_version]
 
-        def print_left(text, color_pair=None):
-            nonlocal y
-            if y >= h - 1: return
-            clean_text = strip_ansi(text)
-            if color_pair:
-                stdscr.addstr(y, 0, clean_text, color_pair)
-            else:
-                stdscr.addstr(y, 0, clean_text)
-            y += 1
+        all_lines.append(f"{'='*70}")
+        all_lines.append(version_name)
+        all_lines.append(f"Date: {version_date}")
+        all_lines.append(f"{'='*70}")
+        all_lines.append("")
 
-        print_centered("=" * 70)
-        print_centered(versions[i][0])
-        print_centered(f"Date: {versions[i][1]}")  # DATE AFFICHÉE
-        print_centered("=" * 70)
-        y += 1
+        if title_lines:
+            all_lines.append("TITLE changed:")
+            all_lines.extend(title_lines)
+            all_lines.append("")
 
-        if versions[i][2]:
-            print_left("TITLE changed:")
-            for line in versions[i][2].splitlines():
-                clean = strip_ansi(line)
-                if line.startswith('\033[32m+'):
-                    print_left(clean, curses.color_pair(1))
-                elif line.startswith('\033[31m-'):
-                    print_left(clean, curses.color_pair(2))
-                elif line.startswith('\033[36m@@'):
-                    print_left(clean, curses.color_pair(3))
-                else:
-                    print_left(clean)
-            y += 1
+        if body_lines:
+            all_lines.append("BODY changed:")
+            all_lines.extend(body_lines)
 
-        if versions[i][3]:
-            print_left("BODY changed:")
-            for line in versions[i][3].splitlines():
-                clean = strip_ansi(line)
-                if line.startswith('\033[32m+'):
-                    print_left(clean, curses.color_pair(1))
-                elif line.startswith('\033[31m-'):
-                    print_left(clean, curses.color_pair(2))
-                elif line.startswith('\033[36m@@'):
-                    print_left(clean, curses.color_pair(3))
-                else:
-                    print_left(clean)
-
-        if i == total_versions:
-            y += 1
-            print_centered("=" * 70)
+        if current_version == total_versions:
+            all_lines.append("")
+            all_lines.append(f"{'='*70}")
             status = "SUCCESS: Final version matches current note" if success else "FAILURE: Divergence detected"
-            print_centered(status)
-            print_centered("=" * 70)
+            all_lines.append(status)
+            all_lines.append(f"{'='*70}")
 
-        y += 1
-        nav = f"Version {i}/{total_versions} — PgDn ↓ | PgUp ↑ | Home | End | [1-{total_versions}] + Enter | q to quit"
+        # Scroll
+        visible_lines = all_lines[scroll_offset:scroll_offset + h - 2]
+        max_scroll = max(0, len(all_lines) - (h - 2))
+
+        y = 0
+        for line in visible_lines:
+            if y >= h - 2:
+                break
+            clean = strip_ansi(line)
+            if line.startswith('\033[32m+'):
+                stdscr.addstr(y, 0, clean, curses.color_pair(1))
+            elif line.startswith('\033[31m-'):
+                stdscr.addstr(y, 0, clean, curses.color_pair(2))
+            elif line.startswith('\033[36m@@'):
+                stdscr.addstr(y, 0, clean, curses.color_pair(3))
+            else:
+                stdscr.addstr(y, 0, clean)
+            y += 1
+
+        # Status bar
+        nav = f"Version {current_version}/{total_versions} | Scroll: {scroll_offset}/{max_scroll} | "
+        nav += "PgUp/PgDn: version | ↑↓: scroll | Home/End | [0-{total_versions}]+Enter | q:quit"
         if number_buffer:
-            nav += f" → Jump to: {number_buffer}_"
-        print_centered(nav)
+            nav += f" → Go to: {number_buffer}_"
+        stdscr.addstr(h-1, 0, nav[:w-1])
 
         stdscr.refresh()
 
         key = stdscr.getch()
 
-        # Handle number input
-        if key >= ord('0') and key <= ord('9'):
+        # Number input
+        if ord('0') <= key <= ord('9'):
             number_buffer += chr(key)
             continue
         elif key == 10:  # Enter
@@ -304,29 +291,42 @@ def main(stdscr):
                 try:
                     target = int(number_buffer)
                     if 0 <= target <= total_versions:
-                        i = target
+                        current_version = target
+                        scroll_offset = 0
                 except:
                     pass
                 number_buffer = ""
             continue
-        elif key == 127 or key == curses.KEY_BACKSPACE:
+        elif key in (127, curses.KEY_BACKSPACE):
             number_buffer = number_buffer[:-1]
             continue
 
-        # Reset number buffer on navigation
         number_buffer = ""
 
-        # Navigation
-        if key in (curses.KEY_NPAGE, curses.KEY_DOWN, ord(' '), ord('j')):
-            if i < total_versions:
-                i += 1
-        elif key in (curses.KEY_PPAGE, curses.KEY_UP, ord('k')):
-            if i > 0:
-                i -= 1
+        # Version navigation
+        if key == curses.KEY_NPAGE:  # Page Down
+            if current_version < total_versions:
+                current_version += 1
+                scroll_offset = 0
+        elif key == curses.KEY_PPAGE:  # Page Up
+            if current_version > 0:
+                current_version -= 1
+                scroll_offset = 0
         elif key == curses.KEY_HOME:
-            i = 0
+            current_version = 0
+            scroll_offset = 0
         elif key == curses.KEY_END:
-            i = total_versions
+            current_version = total_versions
+            scroll_offset = 0
+
+        # Scroll
+        elif key == curses.KEY_UP:
+            if scroll_offset > 0:
+                scroll_offset -= 1
+        elif key == curses.KEY_DOWN:
+            if scroll_offset < max_scroll:
+                scroll_offset += 1
+
         elif key in (ord('q'), ord('Q'), 27):
             break
 
